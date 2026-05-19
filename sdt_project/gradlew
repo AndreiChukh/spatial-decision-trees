@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Lightweight offline Gradle-compatible launcher for this coursework project.
+# It supports the commands used in README:
+#   ./gradlew run
+#   ./gradlew run --args="..."
+#   ./gradlew clean
+# It intentionally compiles with javac so the project runs even when the official
+# Gradle distribution cannot be downloaded from services.gradle.org.
+
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_DIR"
+
+MAIN_CLASS="sdt.Main"
+BUILD_DIR="build/classes-gradlew"
+SOURCE_LIST="build/sources-gradlew.txt"
+DATA_DIR="data"
+SCENE="LC09_L2SP_167041_20230317_20230320_02_T1"
+DEFAULT_RASTERS=(
+  "$DATA_DIR/${SCENE}_SR_B2.TIF"
+  "$DATA_DIR/${SCENE}_SR_B3.TIF"
+  "$DATA_DIR/${SCENE}_SR_B4.TIF"
+  "$DATA_DIR/${SCENE}_SR_B5.TIF"
+  "$DATA_DIR/${SCENE}_SR_B6.TIF"
+  "$DATA_DIR/${SCENE}_SR_B7.TIF"
+  "$DATA_DIR/${SCENE}_QA_PIXEL.TIF"
+)
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  clean)
+    rm -rf build/classes-gradlew build/sources-gradlew.txt
+    echo "Cleaned offline build output."
+    exit 0
+    ;;
+  tasks|--help|-h|help)
+    cat <<'HELP'
+Available commands:
+  ./gradlew run                  Compile and run Chapter 4 with default data/*.TIF files
+  ./gradlew run --args="..."      Compile and run with custom arguments
+
+Common options inside --args:
+  --ndvi-threshold 0.10         Change NDVI pseudo-label threshold
+  --min-node-size 100           Change minimum tree node size
+  --train-validation-fraction 0.70
+                                Use top 70% rows for train/validation and bottom 30% for test
+  --output-dir outputs_ch4      Change output folder
+  ./gradlew clean                Remove offline build output
+
+Memory:
+  Default Java heap is -Xmx4g. Override it, for example:
+  JAVA_OPTS=-Xmx6g ./gradlew run
+
+Default data folder:
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B2.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B3.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B4.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B5.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B6.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_SR_B7.TIF
+  ./data/LC09_L2SP_167041_20230317_20230320_02_T1_QA_PIXEL.TIF
+HELP
+    exit 0
+    ;;
+  run)
+    ;;
+  *)
+    echo "Unsupported command: $cmd" >&2
+    echo "Use: ./gradlew run --args=\"...\"" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$BUILD_DIR" build
+find src/main/java -name '*.java' | sort > "$SOURCE_LIST"
+javac -encoding UTF-8 -d "$BUILD_DIR" @"$SOURCE_LIST"
+
+ARGS_STRING=""
+for arg in "$@"; do
+  case "$arg" in
+    --args=*) ARGS_STRING="${arg#--args=}" ;;
+    --args) shift || true; ARGS_STRING="${1:-}" ;;
+  esac
+done
+
+# Convert --args string to shell words. This matches the README usage with simple
+# space-separated arguments and quoted paths if needed.
+USER_ARGS=()
+if [[ -n "$ARGS_STRING" ]]; then
+  eval "USER_ARGS=( $ARGS_STRING )"
+fi
+
+has_raster_paths=false
+if [[ ${#USER_ARGS[@]} -ge 7 ]]; then
+  # If the first seven arguments are paths/options to TIF files, do not prepend defaults.
+  count_tif=0
+  for i in 0 1 2 3 4 5 6; do
+    if [[ "${USER_ARGS[$i]}" == *.TIF || "${USER_ARGS[$i]}" == *.tif ]]; then
+      count_tif=$((count_tif + 1))
+    fi
+  done
+  [[ $count_tif -eq 7 ]] && has_raster_paths=true
+fi
+
+if [[ "$has_raster_paths" == false ]]; then
+  missing=0
+  for f in "${DEFAULT_RASTERS[@]}"; do
+    if [[ ! -f "$f" ]]; then
+      echo "Missing default raster: $f" >&2
+      missing=1
+    fi
+  done
+  if [[ $missing -ne 0 ]]; then
+    echo "Put Landsat .TIF files into $PROJECT_DIR/data or pass paths through --args." >&2
+    exit 3
+  fi
+  USER_ARGS=("${DEFAULT_RASTERS[@]}" "${USER_ARGS[@]}")
+fi
+
+java ${JAVA_OPTS:--Xmx4g} -Djava.awt.headless=true -cp "$BUILD_DIR" "$MAIN_CLASS" "${USER_ARGS[@]}"
